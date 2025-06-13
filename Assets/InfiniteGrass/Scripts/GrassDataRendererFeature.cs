@@ -261,16 +261,20 @@ public class GrassDataRendererFeature : ScriptableRendererFeature
             BufferHandle posHandle = rg.ImportBuffer(_grassPositionsBuffer);
 
             using var builder = rg.AddComputePass<ComputePassData>("Grass Compute", out var pass);
-
+            
+            var camera = Camera.main;
+            if (!camera)
+                camera = Camera.current;
+            
             pass.height           = height;
             pass.mask             = mask;
             pass.color            = color;
             pass.slope            = slope;
             pass.positions        = posHandle;
             pass.positionBuffer   = _grassPositionsBuffer;
-            pass.cameraVP         = Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix;
-            pass.camView          = Camera.main.worldToCameraMatrix;
-            pass.camProj          = Camera.main.projectionMatrix;
+            pass.cameraVP         = camera.projectionMatrix * camera.worldToCameraMatrix;
+            pass.camView          = camera.worldToCameraMatrix;
+            pass.camProj          = camera.projectionMatrix;
             pass.centerPos        = centerPos;
             pass.bounds           = camBounds;
             pass.spacing          = spacing;
@@ -298,7 +302,7 @@ public class GrassDataRendererFeature : ScriptableRendererFeature
                 _computeShader.SetFloat (DensityFalloffExponent,d.densityExponent);
                 _computeShader.SetVector(BoundsMin,             d.bounds.min);
                 _computeShader.SetVector(BoundsMax,             d.bounds.max);
-                _computeShader.SetVector(CameraPosition,        Camera.main.transform.position);
+                _computeShader.SetVector(CameraPosition,        camera.transform.position);
                 _computeShader.SetVector(CenterPos,             d.centerPos);
                 _computeShader.SetFloat (DrawDistance,          d.drawDistance);
                 _computeShader.SetFloat (TextureUpdateThreshold,d.textureThreshold);

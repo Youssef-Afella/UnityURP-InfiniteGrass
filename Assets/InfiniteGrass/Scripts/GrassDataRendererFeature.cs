@@ -251,76 +251,85 @@ public class GrassDataRendererFeature : ScriptableRendererFeature
             float textureThreshold,
             float maxBufferCount)
         {
-            // Release and re‑create to keep memory in check each frame
             _grassPositionsBuffer?.Release();
-            _grassPositionsBuffer = new GraphicsBuffer(GraphicsBuffer.Target.Append, (int)(1000000 * maxBufferCount), sizeof(float) * 4);
+            _grassPositionsBuffer = new GraphicsBuffer(
+                GraphicsBuffer.Target.Append,
+                (int)(1000000 * maxBufferCount),
+                sizeof(float) * 4);
             _grassPositionsBuffer.SetCounterValue(0);
+
             BufferHandle posHandle = rg.ImportBuffer(_grassPositionsBuffer);
 
-            using var builder = rg.AddComputePass<ComputePassData>("Grass Compute", out var pass);
-            pass.height = height;
-            pass.mask = mask;
-            pass.color = color;
-            pass.slope = slope;
-            pass.positions = posHandle;
-            pass.positionBuffer = _grassPositionsBuffer;
-            pass.cameraVP = Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix;
-            pass.centerPos = centerPos;
-            pass.bounds = camBounds;
-            pass.spacing = spacing;
-            pass.fullDensity = fullDensityDist;
-            pass.densityExponent = densityExp;
-            pass.drawDistance = drawDistance;
+            using var builder = rg.AddComputePass<ComputePassData>("Grass Compute", out var pass);
+
+            pass.height           = height;
+            pass.mask             = mask;
+            pass.color            = color;
+            pass.slope            = slope;
+            pass.positions        = posHandle;
+            pass.positionBuffer   = _grassPositionsBuffer;
+            pass.cameraVP         = Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix;
+            pass.camView          = Camera.main.worldToCameraMatrix;
+            pass.camProj          = Camera.main.projectionMatrix;
+            pass.centerPos        = centerPos;
+            pass.bounds           = camBounds;
+            pass.spacing          = spacing;
+            pass.fullDensity      = fullDensityDist;
+            pass.densityExponent  = densityExp;
+            pass.drawDistance     = drawDistance;
             pass.textureThreshold = textureThreshold;
 
             builder.UseTexture(pass.height);
             builder.UseTexture(pass.mask);
             builder.UseTexture(pass.color);
             builder.UseTexture(pass.slope);
-            builder.UseBuffer(pass.positions, AccessFlags.Write);
+            builder.UseBuffer (pass.positions, AccessFlags.Write);
             builder.AllowGlobalStateModification(true);
 
-            builder.SetRenderFunc((ComputePassData data, ComputeGraphContext ctx) =>
+            builder.SetRenderFunc((ComputePassData d, ComputeGraphContext ctx) =>
             {
                 var cmd = ctx.cmd;
 
-                cmd.SetGlobalTexture(GrassColorRT, data.color);
-                cmd.SetGlobalTexture(GrassSlopeRT, data.slope);
+                cmd.SetGlobalTexture(GrassColorRT, d.color);
+                cmd.SetGlobalTexture(GrassSlopeRT, d.slope);
 
-                _computeShader.SetMatrix(VpMatrix, data.cameraVP);
-                _computeShader.SetFloat(FullDensityDistance, data.fullDensity);
-                _computeShader.SetFloat(DensityFalloffExponent, data.densityExponent);
-                _computeShader.SetVector(BoundsMin, data.bounds.min);
-                _computeShader.SetVector(BoundsMax, data.bounds.max);
-                _computeShader.SetVector(CameraPosition, Camera.main.transform.position);
-                _computeShader.SetVector(CenterPos, data.centerPos);
-                _computeShader.SetFloat(DrawDistance, data.drawDistance);
-                _computeShader.SetFloat(TextureUpdateThreshold, data.textureThreshold);
-                _computeShader.SetFloat(Spacing, data.spacing);
+                _computeShader.SetMatrix(VpMatrix, d.cameraVP);
+                _computeShader.SetFloat (FullDensityDistance,   d.fullDensity);
+                _computeShader.SetFloat (DensityFalloffExponent,d.densityExponent);
+                _computeShader.SetVector(BoundsMin,             d.bounds.min);
+                _computeShader.SetVector(BoundsMax,             d.bounds.max);
+                _computeShader.SetVector(CameraPosition,        Camera.main.transform.position);
+                _computeShader.SetVector(CenterPos,             d.centerPos);
+                _computeShader.SetFloat (DrawDistance,          d.drawDistance);
+                _computeShader.SetFloat (TextureUpdateThreshold,d.textureThreshold);
+                _computeShader.SetFloat (Spacing,               d.spacing);
 
-                Vector2Int gridSize = new(
-                    Mathf.CeilToInt(data.bounds.size.x / data.spacing),
-                    Mathf.CeilToInt(data.bounds.size.z / data.spacing));
+                Vector2Int gridSize  = new(
+                    Mathf.CeilToInt(d.bounds.size.x / d.spacing),
+                    Mathf.CeilToInt(d.bounds.size.z / d.spacing));
                 Vector2Int gridStart = new(
-                    Mathf.FloorToInt(data.bounds.min.x / data.spacing),
-                    Mathf.FloorToInt(data.bounds.min.z / data.spacing));
+                    Mathf.FloorToInt(d.bounds.min.x / d.spacing),
+                    Mathf.FloorToInt(d.bounds.min.z / d.spacing));
 
                 _computeShader.SetVector(GridStartIndex, (Vector2)gridStart);
-                _computeShader.SetVector(GridSize, (Vector2)gridSize);
-                _computeShader.SetBuffer(0, GrassPositions, data.positionBuffer);
-                _computeShader.SetTexture(0, GrassHeightMapRT, data.height);
-                _computeShader.SetTexture(0, GrassMaskMapRT, data.mask);
+                _computeShader.SetVector(GridSize,       (Vector2)gridSize);
+                _computeShader.SetBuffer (0, GrassPositions,   d.positionBuffer);
+                _computeShader.SetTexture(0, GrassHeightMapRT, d.height);
+                _computeShader.SetTexture(0, GrassMaskMapRT,   d.mask);
 
                 cmd.DispatchCompute(_computeShader, 0,
                     Mathf.CeilToInt((float)gridSize.x / 8),
                     Mathf.CeilToInt((float)gridSize.y / 8),
                     1);
 
-                cmd.SetGlobalBuffer(GrassPositions, data.positionBuffer);
-                cmd.CopyCounterValue(data.positionBuffer, InfiniteGrassRenderer.instance.argsBuffer, 4);
+                cmd.SetGlobalBuffer(GrassPositions, d.positionBuffer);
+                cmd.CopyCounterValue(d.positionBuffer, InfiniteGrassRenderer.instance.argsBuffer, 4);
 
                 if (InfiniteGrassRenderer.instance.previewVisibleGrassCount)
-                    cmd.CopyCounterValue(data.positionBuffer, InfiniteGrassRenderer.instance.tBuffer, 0);
+                    cmd.CopyCounterValue(d.positionBuffer, InfiniteGrassRenderer.instance.tBuffer, 0);
+
+                /* --- reset to the camera’s own matrices --- */
+                cmd.SetViewProjectionMatrices(d.camView, d.camProj);
             });
         }
 
@@ -400,16 +409,18 @@ public class GrassDataRendererFeature : ScriptableRendererFeature
             public TextureHandle mask;
             public TextureHandle color;
             public TextureHandle slope;
-            public BufferHandle positions;
+            public BufferHandle  positions;
             public GraphicsBuffer positionBuffer;
             public Matrix4x4 cameraVP;
-            public Vector2 centerPos;
-            public Bounds bounds;
-            public float spacing;
-            public float fullDensity;
-            public float densityExponent;
-            public float drawDistance;
-            public float textureThreshold;
+            public Matrix4x4 camView;      // ← new
+            public Matrix4x4 camProj;      // ← new
+            public Vector2  centerPos;
+            public Bounds   bounds;
+            public float    spacing;
+            public float    fullDensity;
+            public float    densityExponent;
+            public float    drawDistance;
+            public float    textureThreshold;
         }
 
         // --------------------------------------------------------------------------------------

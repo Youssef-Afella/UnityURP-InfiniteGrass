@@ -1,4 +1,4 @@
-﻿Shader "InfiniteGrass/GrassBladeShader"
+Shader "InfiniteGrass/GrassBladeShader"
 {
 
     Properties
@@ -39,14 +39,15 @@
             Tags { "LightMode" = "UniversalForward" }
 
             HLSLPROGRAM
+            #pragma target 4.5
             #pragma vertex vert
             #pragma fragment frag
 
-            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS
-            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS_CASCADE
+            #pragma multi_compile _ _MAIN_LIGHT_SHADOWS _MAIN_LIGHT_SHADOWS_CASCADE _MAIN_LIGHT_SHADOWS_SCREEN
             #pragma multi_compile _ _ADDITIONAL_LIGHTS_VERTEX _ADDITIONAL_LIGHTS
             #pragma multi_compile _ _ADDITIONAL_LIGHT_SHADOWS
-            #pragma multi_compile _ _SHADOWS_SOFT
+            #pragma multi_compile _ _SHADOWS_SOFT _SHADOWS_SOFT_LOW _SHADOWS_SOFT_MEDIUM _SHADOWS_SOFT_HIGH
+            #pragma multi_compile _ _FORWARD_PLUS
             #pragma multi_compile_fog
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
@@ -60,7 +61,12 @@
             struct Varyings
             {
                 float4 positionCS  : SV_POSITION;
-                half3 color        : COLOR;
+                float3 positionWS  : TEXCOORD0;
+                half3 normalWS     : TEXCOORD1;
+                half3 albedo       : TEXCOORD2;
+                float fogFactor    : TEXCOORD3;
+                half colorMask     : TEXCOORD4;
+                half posY          : TEXCOORD5;
             };
 
             CBUFFER_START(UnityPerMaterial)
@@ -88,10 +94,9 @@
 
                 float _DrawDistance;
                 float _TextureUpdateThreshold;
-
-                StructuredBuffer<float3> _GrassPositions;
-
             CBUFFER_END
+
+            StructuredBuffer<float3> _GrassPositions;
 
             sampler2D _BaseColorTexture;
             sampler2D _WindTexture;
@@ -142,23 +147,6 @@
                 return OutMinMax.x + (In - InMinMax.x) * (OutMinMax.y - OutMinMax.x) / (InMinMax.y - InMinMax.x);
             }
 
-            float3 CalculateLighting(float3 albedo, float3 positionWS, float3 N, float3 V, float mask, float positionY){
-
-                half3 result = SampleSH(0) * albedo;
-
-                Light mainLight = GetMainLight(TransformWorldToShadowCoord(positionWS));
-                result += ApplySingleDirectLight(mainLight, N, V, albedo, mask, positionY);
-
-                int additionalLightsCount = GetAdditionalLightsCount();
-                for (int i = 0; i < additionalLightsCount; ++i)
-                {
-                    Light light = GetAdditionalLight(i, positionWS);
-                    result += ApplySingleDirectLight(light, N, V, albedo, mask, positionY);
-                }
-
-                return result;
-            }
-
             Varyings vert(Attributes IN, uint instanceID : SV_InstanceID)
             {
                 Varyings OUT;
@@ -171,72 +159,79 @@
                 float grassWidth = _GrassWidth * (1 - random(pivot.x * 950 + pivot.z * 10) * _GrassWidthRandomness);
 
                 float distanceFromCamera = length(_WorldSpaceCameraPos - pivot);
-                //Expand the grass width based on the distance from camera
                 grassWidth += saturate(Remap(distanceFromCamera, float2(_ExpandDistantGrassRange.x, _ExpandDistantGrassRange.y), float2(0, 1))) * _ExpandDistantGrassWidth;
                 grassWidth *= (1 - IN.positionOS.y);
 
-                //Grass Height
                 float grassHeight = _GrassHeight * (1 - random(pivot.x * 230 + pivot.z * 10) * _GrassHeightRandomness);
                 
-                //Billboard Logic
-                float3 cameraTransformRightWS = UNITY_MATRIX_V[0].xyz;
-                float3 cameraTransformUpWS = UNITY_MATRIX_V[1].xyz;
                 float3 cameraTransformForwardWS = -UNITY_MATRIX_V[2].xyz;
 
                 float4 slope = tex2Dlod(_GrassSlopeRT, float4(uv, 0, 0));
                 float xSlope = slope.r * 2 - 1;
                 float zSlope = slope.g * 2 - 1;
 
-                float3 slopeDirection = normalize(float3(xSlope, 1 - (max(abs(xSlope), abs(zSlope)) * 0.5), zSlope));//Direction reconstructed from the slope texture
-                float3 bladeDirection = normalize(lerp(float3(0, 1, 0), slopeDirection, slope.a));//The original direction is upward
+                float3 slopeDirection = normalize(float3(xSlope, 1 - (max(abs(xSlope), abs(zSlope)) * 0.5), zSlope));
+                float3 bladeDirection = normalize(lerp(float3(0, 1, 0), slopeDirection, slope.a));
 
                 half3 windTex = tex2Dlod(_WindTexture, float4(TRANSFORM_TEX(pivot.xz, _WindTexture) + _WindScroll * _Time.y,0,0));
                 float2 wind = (windTex.rg * 2 - 1) * _WindStrength * (1-slope.a);
 
-                bladeDirection.xz += wind * IN.positionOS.y;//Adding wind and multiplying with the Y position to affect the tip only
-
+                bladeDirection.xz += wind * IN.positionOS.y;
                 bladeDirection = normalize(bladeDirection);
                 
-                float3 rightTangent = normalize(cross(bladeDirection, cameraTransformForwardWS));//The direction we gonna stretch the blade
+                float3 rightTangent = normalize(cross(bladeDirection, cameraTransformForwardWS));
 
                 float3 positionOS = bladeDirection * IN.positionOS.y * grassHeight 
-                                    + rightTangent * IN.positionOS.x * grassWidth;//This insures that the blade is always facing the camera
+                                    + rightTangent * IN.positionOS.x * grassWidth;
 
                 positionOS.xz += (IN.positionOS.y * IN.positionOS.y) * float2(srandom(pivot.x * 851 + pivot.z * 10), srandom(pivot.z * 647 + pivot.x * 10)) * _GrassCurving;
-                //Adds a bit of curving to grass blade
 
-                //posOS -> posWS
                 float3 positionWS = positionOS + pivot;
                 
-                //posWS -> posCS
                 OUT.positionCS = TransformWorldToHClip(positionWS);
-
+                OUT.positionWS = positionWS;
 
                 half3 baseColor = lerp(_ColorA, _ColorB, tex2Dlod(_BaseColorTexture, float4(TRANSFORM_TEX(pivot.xz, _BaseColorTexture),0,0)).r);
-                
                 half3 albedo = lerp(_AOColor, baseColor, IN.positionOS.y);
 
                 float4 color = tex2Dlod(_GrassColorRT, float4(uv, 0, 0));
                 albedo = lerp(albedo, color.rgb, color.a);
 
-                //Lighting Stuff
-                half3 N = normalize(bladeDirection + cameraTransformForwardWS * -0.5 + _RandomNormal * half3(srandom(pivot.x * 314 + pivot.z * 10), 0, srandom(pivot.z * 677 + pivot.x * 10)));
-                //The normal vector is just the blade direction tilted a bit towards the camera with a bit of randomness
-                half3 V = normalize(_WorldSpaceCameraPos - positionWS);
+                OUT.albedo = albedo;
+                OUT.colorMask = color.a;
+                OUT.posY = IN.positionOS.y;
 
-                float3 lighting = CalculateLighting(albedo, positionWS, N, V, color.a, IN.positionOS.y);
-                //I'm also passing the Alpha Channel of the Color Map cause I dont want the blades that are affected with color to receive specular light 
-                //The main use of the color map for me is burning the grass and the burned grass should not receive specular light
-                
-                float fogFactor = ComputeFogFactor(OUT.positionCS.z);
-                OUT.color.rgb = MixFog(lighting, fogFactor);
+                OUT.normalWS = normalize(bladeDirection + cameraTransformForwardWS * -0.5 + _RandomNormal * half3(srandom(pivot.x * 314 + pivot.z * 10), 0, srandom(pivot.z * 677 + pivot.x * 10)));
+
+                OUT.fogFactor = ComputeFogFactor(OUT.positionCS.z);
 
                 return OUT;
             }
 
             half4 frag(Varyings IN) : SV_Target
             {
-                return half4(IN.color.rgb,1);
+                half3 N = normalize(IN.normalWS);
+                half3 V = normalize(_WorldSpaceCameraPos - IN.positionWS);
+                half3 albedo = IN.albedo;
+                half mask = IN.colorMask;
+                half posY = IN.posY;
+
+                half3 result = SampleSH(N) * albedo;
+
+                Light mainLight = GetMainLight(TransformWorldToShadowCoord(IN.positionWS));
+                result += ApplySingleDirectLight(mainLight, N, V, albedo, mask, posY);
+
+                #if defined(_ADDITIONAL_LIGHTS)
+                int additionalLightsCount = GetAdditionalLightsCount();
+                for (int i = 0; i < additionalLightsCount; ++i)
+                {
+                    Light light = GetAdditionalLight(i, IN.positionWS);
+                    result += ApplySingleDirectLight(light, N, V, albedo, mask, posY);
+                }
+                #endif
+
+                result = MixFog(result, IN.fogFactor);
+                return half4(result, 1);
             }
             ENDHLSL
         }
